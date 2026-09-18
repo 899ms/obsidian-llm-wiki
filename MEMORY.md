@@ -8,23 +8,27 @@
 
 ---
 
-## Current state (2026-09-17)
+## Current state (2026-09-18)
 
 **Latest shipped release:** **v1.27.2 PATCH** (2026-09-15, 4144 tests / 294 files —
-see CHANGELOG §1.27.2). Nothing released since. `main` = `a8110551`, Gate 1 green
-at **304 files / 4231 tests**. **v1.28.0 MINOR is in flight.**
+see CHANGELOG §1.27.2). Nothing released since. `main` = `3499da2a`, Gate 1 green
+at **305 files / 4240 tests**. **v1.28.0 MINOR is in flight.**
 
 **Merged into v1.28.0 so far (unreleased):**
 
+- **#726** — `deleteEmptyStubs` gives a link its name back before the stub it points
+at is deleted. Closes **#725**. Merged **without `--admin`**: a cross-account
+`gh pr review --approve` satisfies the ruleset, so no bypass-actor mutation is needed
+when merging someone else's PR — prefer that path.
 - **#748** — **#603 slice 1**: the write gate split into named layers
 (`pageGuard` / `rawWrite` / `notify`) with a defaultless `WriteIntent`, zero call-site
 changes. Two mutation tests prove the wiring; see §"Slice 1 shipped" for the race it
 surfaced.
-
 - **#744** + **#746** — **#741 resolved in two steps**: a cross-origin failure is now
 recorded per origin with a visible warning instead of degrading silently, and desktop
-gains a streaming `node:https` transport for those origins. See §"Design record — the
-streaming fallback classifies by URL" for the analysis and the rejected transports.
+gains a streaming `node:https` transport for those origins. **That transport does not
+load in a shipped build** — see #751 in §"Work list"; the safety net made it fail
+silently rather than crash, which is why it went unnoticed.
 - **#736** — custom request headers, the `opencode` preset, and a `(Responses)`
 variant. Closes **#723** and **#735**, both verified end to end by @aisahpA on a
 real vault with a real Go key. Three defects he found in the PR's own code were
@@ -37,21 +41,93 @@ command; a PR body is not the commit-message file).
 - Earlier: #707 / #708 (Dependabot eslint / tslib bumps) and #727 (the lockfile
 gate vs Dependabot, root-fixed and verified in production).
 
-**Next is #603, not #729.** #603 is the hard prerequisite for #729 Phase 1+ by
-design (§"Coupling constraints"): a reader's acceptance metric is meaningless
-while the write path's contract does not hold. Its design pass is complete
-(§"Design record — write path and page index") and was **re-measured against the
-source on 2026-09-17, which corrected three of its claims and changed the first
-slice** — see §"Re-measurement". The corrected shape: slice 1 introduces the
-three layers (`rawWrite` / `pageGuard` / `notify`) plus a required-`intent` type
-with **zero call-site changes**, so zero behaviour change is provable; slice 2
-converts the two prose-declared bypasses to typed intent; slice 3 takes the
-**six real violations across five files** one at a time, `fix-runners.ts` last.
+**In review, not merged:** **#750** (#603 slices 2 + 3) — awaiting @DocTpoint. It
+also carries the correction that the log's guard is *harmful*, not merely idle, and a
+contract test that reads the source tree rather than restating the rule.
+
+**Next work, ordered by ROI: §"Work list (2026-09-18)" below.** The top item is
+**#751** — a one-line build-config fix that makes a shipped feature work.
 
 **Planning lives in ROADMAP §"v1.28.0 MINOR — Design track"** — scope groups,
 the hardening-before-reader ordering, and the open decisions. This file carries
 the *why* and the *how* (see §"Design record — cross-source relations" below),
 never the window schedule.
+
+---
+
+## Work list (2026-09-18) — ordered by ROI
+
+**ROI = (impact × certainty) / effort.** Certainty is how confident we are the fix
+lands *and* stays landed. A high-impact item with unknown reproduction cost ranks
+below a medium-impact one that is measured, because the second actually ships.
+
+### Tier 0 — land #751 before anything else
+
+**#751** — `esbuild.config.mjs` never sets `platform`, so it defaults to `browser`;
+`node:module` is `external`; and under the browser platform esbuild leaves an external
+dynamic `import()` as a **native** `import()`, which the renderer hands to Chromium's
+module loader and blocks.
+
+| | |
+|---|---|
+| Impact | **Two shipped features.** Codex browser login (**#665**, broken since v1.25.6) and the desktop streaming transport from **#746**, which is inert — it fails into the `requestUrl` fallback, which is exactly why it went unnoticed |
+| Effort | **One line**: `supported: { 'dynamic-import': false }` |
+| Certainty | **High** — measured on the artifact (`import("node:module")` 2→0, `require(...)` 0→2) and verified end to end on a real vault with a real Go key |
+
+**The global switch is safe, and that was checked rather than assumed.** There are 37
+`await import()` sites and only **2** are Node builtins. The other 35 load `ai` or our
+own modules, and `ai` is **not** in the `external` list — the shipped bundle contains
+`require("ai")` 0 times and `import("ai")` 0 times, so it is already inlined into the
+single-file CJS bundle. Only `obsidian`, `electron`, `@codemirror/*`, `@lezer/*` and
+the Node builtins are external, and of those only the builtins are dynamically
+imported. So the switch reaches exactly the two sites that need it.
+
+**#753 is the same defect fixed at the call sites** and is an *alternative*, not a
+second half. If #751 lands, `await import('node:module')` compiles to `require` on its
+own — which is precisely what #753's bundle assertion checks for, so that assertion
+would pass without its source change. Prefer #751: it is smaller, and it is the one
+verified against a real vault. #753's source-level form is defensible (it makes the
+CommonJS requirement explicit) but its `@typescript-eslint/no-require-imports`
+disables exist only to support a form the build can produce by itself. **Decide one,
+not both.** Both are filed on this reasoning; do not re-derive it.
+
+### Tier 1 — unblock the queue (zero new work)
+
+| Item | What it waits on | Effort |
+|---|---|---|
+| **#750** (#603 slices 2+3) | @DocTpoint | none |
+| **#656** | @DocTpoint's 5th round — he wrote *"Points 1 and 2 addressed … and I will approve"*. The CRLF claim is gone from the source; whether that satisfies him is his call | none |
+| **#673** | @DocTpoint — blocking issue is 9 of 11 locales stating the opposite of shipped behaviour | none |
+| **#687** | The author. Its own description still says *"Draft / work in progress"* with *"run final validation before requesting review"* outstanding, while the draft flag is off. Asked, not reviewed | none |
+
+### Tier 2 — the v1.28.0 feature track (the window's purpose)
+
+Dependency-ordered; each is blocked by the one before it.
+
+1. **#603** — slices 2+3 are in #750. After it lands, #603 closes.
+2. **#662** — the page index rebuilt per item and per written page. Same surface as #603; the design already concludes the fix is a **run-scoped index the writer updates**, not a TTL cache.
+3. **#729 Phase 1** (M0 co-citation projection) — hard-blocked on #603 by design: a reader's acceptance metric is meaningless while the write path's contract does not hold.
+4. **#729 Phase 2** + **#664 together** — *“they ship together”*: #729 adds Related entries while #664 says those lists already grow ~2 per source and are never pruned. Designed separately, one raises the ceiling while the other leaves the floor open.
+5. **#729 Phases 3–6**, then **#668 + #752 together** — #668 restructures the settings tab and #752 is the sibling bug (the panel also jumps back to the top), so fixing the scroll before the restructure means doing it twice. #729's toggle placement is also gated on #668.
+
+### Tier 3 — user-facing bugs worth a PATCH
+
+| Item | Why it ranks here |
+|---|---|
+| **#703** — ingest hangs indefinitely on one file, `cancelIngestion()` cannot abort it. **High impact, low certainty**: the v1.27.2 release notes already carry it as a Known Issue, but it needs the reporter's file, and it is labelled `help wanted` |
+| **#665** | Closed by #751 — do not fix separately |
+| **#676**, **#567**, **#597** | Real bugs with narrow reach; #597 already has the #656 PR in review |
+| **#699** | Docs: the shipped bundle carries no third-party licence. Cheap and it is a compliance-shaped gap |
+
+### Tier 4 — backlog and design
+
+**#701** awaits a product decision, not code: it writes a marker into the user's own
+notes, and §“#701 — the premise does not hold” below records why the two scenarios it
+cites are already handled. **#330 / #358** are design anchors rather than tasks.
+**#479 / #480** are measurement research. **#91, #112, #142, #168, #184, #220, #285,
+#295, #317, #326, #467, #468, #503, #568** are unstarted enhancements on
+`v1.27.x PATCH` or older milestones and should be re-triaged at the next planning
+pass rather than carried indefinitely.
 
 **Open PRs:** #728 (Dependabot MAJOR `@ai-sdk/openai-compatible` — needs the
 request-body check against `openai-compat-request-body.test.ts` before merging) ·
@@ -222,111 +298,41 @@ ROADMAP §"v1.28.0 MINOR — Design track"; this section is the *why* and the *h
 > (ordered phases)` to build it**. Everything after that is rationale and
 > guardrails. The issue is #729.
 
-### The measurement
+### Where the analysis lives — and the two corrections made since
 
-@DocTpoint rebuilt a 413-note vault unattended over three days on v1.27.1: 413
-source pages + 2135 entity/concept pages. **95 % of edges connect pages born from
-the same note; plain co-occurrence reproduces 94.5 % of the Related edges; nine
-of ten pages have no incoming link from a page with another source.** The Related
-cap holds with zero violations and strays sit at 1 %.
+**The measurement, the root cause, the three mechanisms, the budget table, the
+allocation algorithm, the definition, the rejection of embeddings and the acceptance
+criteria are all in [issue #729](https://github.com/GD4AI/obsidian-llm-wiki/issues/729).**
+It was written as the design document and is the canonical statement of them. They
+were mirrored here for several rounds and had already begun to diverge — this copy
+carried none of the corrections below and the issue carries none of the phase status
+that follows. One fact, one place: **read the issue for the design, this section for
+what changed afterwards and what is left.**
 
-A null model over five multi-note questions (same character budget, same model,
-thinking off, truth from the notes, blind-rated) put an embedding index over raw
-notes (A) against the same index over wiki pages (B) and the plugin's query path
-(C): **B slightly ahead of A, both clearly ahead of C, which lost 3 of 5.**
-B ≥ A is the first hard evidence that the compiler is not a detour. The reader is
-the bottleneck, and the bottleneck is **recall** — arm C found the right pages
-less often, not less accurately once they were found.
+Two corrections were made here after the issue was written, and would otherwise be
+lost:
 
-### Root cause: the star is written into the prompt
+- **Two concerns, not three of a kind.** `GRANULARITY_FIX_LIMITS` and the `?? 5`
+  defaults are **extraction** limits — how many entities/concepts to ask for, read by
+  `getGranularityInstruction` and `getGranularityFixLimits`. `SIBLING_CAP` caps
+  **Related list entries**. Both are granularity-keyed and nothing else about them is
+  the same, so they are two tables in `constants.ts`, not one.
+- **The `?? 5` count was 4, not 2** — two in `getGranularityInstruction` (`:209`,
+  `:210`) and two in `getGranularityFixLimits` (`:226`, `:227`). Replacing only the
+  documented pair would have left two orphaned defaults, the exact scattering the
+  constant exists to remove.
 
-The intra-source shape is not emergent. `src/wiki/prompts/ingestion.ts:27`
-instructs the model to name only items "extracted from **this same source
-file**", and the JSON example repeats it ("Related entity names **from this
-source**"). Phase 2 (`page-factory/related-links.ts`) then resolves those names
-against the whole vault through `buildVaultResolver`, which returns `undefined`
-for anything the vault does not hold — so the write path can **confirm** a name
-but can never **discover** one. In a star forest there is no path between stars,
-so no PPR weight function can create reachability either.
+And one claim in the issue that did not survive contact, recorded here so Phase 2 does
+not re-derive it: **`RELATED_BUDGET.siblings` must NOT be read yet.** It is 3/3/2/1/3
+where today every granularity gets a flat 3, so consuming it is not
+behaviour-preserving. Phase 0 shipped it unread on purpose; Phase 2 owns it.
 
-**The generalisable method note:** the constraint was in the prompt, not the
-architecture. Reading the module tells you what *could* happen; reading the
-prompt tells you what *does*.
-
-### The machinery is already there and unwired
-
-- `getExistingWikiPages` returns, per page in the vault: `path`, `title`,
-  `aliases`, `tags`, `ctime`, and a bounded slice of the **prose**
-  (`CANDIDATE_WINDOW_TEXT_CHARS` = 2000). Read **locally — zero prompt tokens**,
-  so none of this is bounded by vault size in the prompt.
-- `core/candidate-window.ts` — "the one ranked window every prompt draws from" —
-  ranks on title + aliases + prose, `CANDIDATE_WINDOW_TOP_K` = 30.
-- `core/build-graph.ts` already builds the vault link graph locally.
-- The ranker is already used *inside* the page factory
-  (`page-factory/path-resolution.ts:27`) and in `lint/fix-dead-link.ts:169` —
-  for path resolution and link repair, **never for relation discovery**.
-
-The unwired question is simply: *which other pages in this vault relate to this
-one?*
-
-### Three mechanisms, ordered floor-first
-
-| | **M0 co-citation projection** | **M1 local window ranking** | **M2 world-knowledge proposals** |
-|---|---|---|---|
-| Signal | the vault's link structure | the vault's text | the model's training data |
-| Rule | `A → E` and `B → E` ⇒ `A — B` | rank the vault pool by title+aliases+prose against the item's own `summary` | the extraction model proposes names it believes exist |
-| **Model dependency** | **zero** | **low** — inherits Phase 1's `summary`, which page generation, dedup and query already depend on | **high** |
-| Prompt change / extra call | none / none | none / none | yes / none |
-| Role | **holds the floor** | **raises the floor** | **explores the ceiling** |
-| Status | this issue | this issue | deferred, evaluated against M0+M1's measurement |
-
-Both feed the same filter — the vault resolver — so neither can write a link to a
-page that does not exist.
-
-### Adaptive budget (two granularity-keyed concerns, not one)
-
-Corrected 2026-09-17 while implementing Phase 0. The earlier framing — "three
-scattered ceilings the new table replaces" — was wrong on two counts, and both
-would have misled Phase 2:
-
-- **They are two concerns, not three of a kind.** `GRANULARITY_FIX_LIMITS` and
-the `?? 5` defaults are **extraction** limits (how many entities/concepts to ask
-for), read by `getGranularityInstruction` and `getGranularityFixLimits`.
-`SIBLING_CAP` caps **Related list entries**. Both are granularity-keyed; nothing
-else about them is the same, so they are two tables in `constants.ts`, not one.
-- **The `?? 5` count was 4, not 2.** Two in `getGranularityInstruction`
-(`:209`, `:210`) and two in `getGranularityFixLimits` (`:226`, `:227`).
-Replacing only the documented pair would have left two orphaned defaults — the
-exact scattering the constant exists to remove.
-
-The Related budget, keyed by the same extraction-granularity axis:
-
-| Granularity | note-grounded | cross-source | total | siblings |
-|---|---|---|---|---|
-| `fine` | 7 | 5 | 12 | 3 |
-| `standard` | 5 | 3 | 8 | 3 |
-| `coarse` | 3 | 2 | 5 | 2 |
-| `minimal` | 2 | 1 | 3 | 1 |
-| `custom` | from `customEntityLimit` | `clamp(ceil(n × 0.6), 1, 5)` | sum | 3 |
-
-The cross-source column is a **ceiling, never a quota**. Refactor surface is
-small: the granularity table is module-private (zero external callers) and
-`SIBLING_CAP` is imported by one test file.
-
-### Allocation: reserved, with backfill
-
-Additive allocation silently disables the feature on pages whose Related list is
-already full — precisely the pages that need it.
-
-```
-1. resolve note-grounded names              (today's logic, unchanged)
-2. orphan -> siblings up to the sibling cap  (unchanged)
-3. note-grounded may occupy at most (total - cross-source) entries
-4. fill up to `cross-source` slots from the vault pool,
-   excluding self and anything already present
-5. if cross-source candidates < the reservation, the freed slots go back
-   to note-grounded (up to `total`)
-```
+**The budget table and the five-step allocation algorithm are in the issue** under
+§"1. An adaptive Related budget" and §"2. Reserved allocation, with backfill". Kept
+there rather than mirrored: they are the specification Phase 2 implements, and a copy
+here would be a second place to update when it changes. The one property worth
+carrying at this level is that **the cross-source column is a ceiling, never a
+quota** — a page with no cross-source candidates is not made emptier by the feature.
 
 ### Implementation plan (ordered phases)
 
@@ -874,6 +880,61 @@ CORS-blocked host is not reachable there — not pending work.
 
 ---
 
+## Design record — #701's premise does not hold (2026-09-18)
+
+**Decision, not implementation.** #701 writes a `wiki-ingested:` marker into the
+user's own source notes. It is deferred pending a product decision, and this records
+why the deferral is about the premise rather than the code.
+
+### Where the fact can live
+
+"This note has been ingested" is a **derived** fact — an assertion about a
+transformation the plugin performed, not a property of the note. So it can live in
+three places, and the middle one is not a proposal:
+
+| Home | Owned by | Survives a plugin reset | Survives deleting the wiki |
+|---|---|---|---|
+| Plugin state (`data.json`) | plugin | ❌ | ❌ |
+| **The wiki's own artifact** — `wiki/sources/*.md` carrying `contentHash` + `source_file` | plugin | ✅ | n/a |
+| The user's source note (frontmatter marker) | **the user** | ✅ | ✅ |
+
+`buildIngestedHashes()` (`wiki-engine.ts:477`) is documented as *"Content hashes
+already present in the wiki, read from source-page frontmatter"*, and
+`wiki-engine.ts:1775` writes `contentHash` onto every sources page. `scanners.ts:485`
+already uses the same field for source-drift detection.
+
+### Both cited failure modes are already handled
+
+- **"a folder re-run after the batch cache restarts"** — the batch cache is
+  `ingestedHashesCache`, a TTL memoisation. When it expires, `buildIngestedHashes()`
+  **recomputes the set from the wiki pages**. The cache is not the record; the wiki is.
+  Nothing is lost, so nothing re-ingests.
+- **"a user re-adding the same note body under a different name"** — already deduped.
+  `hashBody` (`source-requirements.ts:77`) is FNV-1a over the trimmed,
+  whitespace-normalised **body only** — no path, no filename, no frontmatter. The same
+  body under any name hashes identically and is caught by `ingested.has(hash)`.
+
+No case was found that the marker fixes and the hash does not.
+
+### The two problems the marker introduces
+
+**It writes a derived fact into the user's input.** The wiki is the plugin's output
+space; the note is the user's. `README.md:114` promises *"The plugin modifies nothing
+in your original notes"* in all eleven locales.
+
+**Its failure mode is the user's main recovery action.** Deleting a `wiki/sources/`
+page — or the whole `wiki/` folder — is how someone forces a rebuild. The hash
+mechanism cooperates: remove the artifact, the fact is gone, the note re-ingests. The
+marker opposes it: the note still says "done" while the page is gone, so a rebuild
+silently skips exactly the notes the user was trying to rebuild. A second source of
+truth does not stay in agreement, and here disagreeing is not neutral.
+
+**What would reopen this:** a specific, demonstrated case the hash mechanism misses —
+an observation, not a reasoning chain. Any redesign should keep the fact on the wiki
+side.
+
+---
+
 ## Architectural invariants (write-once)
 
 - **`document` is forbidden in production code** — Obsidian is multi-window,
@@ -1114,22 +1175,29 @@ workflow".
 ### Resume point (post-compact handoff, 2026-09-18)
 
 **Read in this order if context was lost:** this file's `## Current state` (where
-things stand) → ROADMAP §"v1.28.0 MINOR — Design track" (what ships, in what
-order) → then the design record for whichever item is next: **`## Design record —
-write path and page index` for #603**, or `## Design record — cross-source
-relations` for #729. Issues: **#603** first, then **#729**.
+things stand) → **`## Work list (2026-09-18)`** (what to do next, ROI-ordered) →
+ROADMAP §"v1.28.0 MINOR — Design track" (the window's scope) → then the design record
+for whichever item is next. Issues: **#751** first, then whatever Tier 1 unblocks.
 
-**State at handoff:** `main` = `a8110551`, Gate 1 green at **304 files / 4231
-tests**. Closed in this window: #723, #735, #669, #741, #729 Phase 0. **#603 slice 1
-is merged** (the layers exist, nothing yet uses them); slices 2 and 3 are next and the
-design record carries the corrected site list. **Nothing is mid-flight in the working
-tree** — no branch, no stash, no uncommitted edit.
+**State at handoff:** `main` = `3499da2a`, Gate 1 green at **305 files / 4240 tests**.
+Closed in this window: #723, #725, #735, #669, #741, #729 Phase 0. **Nothing is
+mid-flight in the working tree** — no branch, no stash, no uncommitted edit. **#750 is
+open and awaiting @DocTpoint** — do not merge it without his review.
 
-**The next concrete step is #603, not #729** — #729 Phase 1 is blocked by it by
-design (§"Coupling constraints"). The design pass for #603 is finished; what
-remains is implementation, and its first slice is the *intent-declaring* sites
-rather than the violations, because those are behaviour-preserving and establish
-the interfaces first.
+**The next concrete step is #751**, one line in `esbuild.config.mjs`. It is written up
+in the work list, including the check that its global flag only reaches the two `node:`
+imports, and the reason **#751 and #753 are alternatives rather than two halves** —
+decide one. Do not re-derive either.
+
+**Two facts that save time on resume:** the ruleset needs ~15 s to propagate after a
+bypass actor is added, **and you usually do not need one** — a cross-account
+`gh pr review --approve` satisfies it, which is how #726 merged without `--admin`.
+This environment's GraphQL surface returns intermittent EOFs and its
+`/pulls/<N>/files` endpoint occasionally returns an empty array; retry, and prefer REST
+over `gh pr view`.
+
+**One open decision blocks a later phase, not this one:** #729's toggle placement
+(bottom Advanced panel vs a home created by #668) — needed before Phase 4.
 
 **Two facts that save time on resume:** the ruleset needs ~15 s to propagate
 after a bypass actor is added (6 s fails the merge), and this environment's
